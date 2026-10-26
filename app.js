@@ -1,4 +1,4 @@
-import {features,summarize,distance,classify,HoldTimer} from './engine.mjs';
+import {features,registerProfile,classify,HoldTimer} from './engine.mjs?v=2';
 const $=id=>document.getElementById(id);
 const profiles={};const timer=new HoldTimer();
 let target='あ',model=null,stream=null,audioStream=null,audioContext=null,analyser=null,audioData=null;
@@ -9,39 +9,39 @@ function reset(){timer.reset();document.body.classList.remove('success');paintPr
 function paintProgress(){const seconds=Number($('seconds').value);const percent=Math.min(100,timer.ms/(seconds*10));$('progress').style.width=percent+'%';$('progress').setAttribute('aria-valuenow',Math.round(percent));say('time',`${(timer.ms/1000).toFixed(1)} / ${seconds} 秒`);}
 function ready(){return ['安静',target].every(k=>profiles[k]);}
 function profileStatus(){say('calibrationStatus',['安静','あ','い','う'].map(k=>`${k}：${profiles[k]?'登録済み':'未登録'}`).join(' ／ '));}
+function registrationMessage(text){say('registrationMessage',text);say('message',text);}
 function select(value){target=value;reset();document.querySelectorAll('[data-target]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.target===target)));say('targetText',target);say('instruction',hints[target]);$('face').setAttribute('aria-label',target+'の口型のイメージ');const [rx,ry]=target==='あ'?[26,34]:target==='い'?[49,12]:[16,19];$('mouth').setAttribute('rx',rx);$('mouth').setAttribute('ry',ry);say('feedback',active?'おてほんを みてみよう':'まずは カメラを はじめよう');}
 document.querySelectorAll('[data-target]').forEach(b=>b.onclick=()=>{if(!capture)select(b.dataset.target);});
 $('settingsButton').onclick=()=>{const open=$('settings').hidden;$('settings').hidden=!open;$('settingsButton').setAttribute('aria-expanded',String(open));};
 ['mode','seconds','tolerance','threshold'].forEach(id=>$(id).onchange=()=>{reset();say('modeLabel',$('mode').selectedOptions[0].textContent);});
 $('retry').onclick=()=>{reset();say('feedback',active?'もういちど やってみよう':'カメラを はじめよう');};
-$('clear').onclick=()=>{capture=null;for(const k of Object.keys(profiles))delete profiles[k];reset();profileStatus();say('message','登録を消しました。使用する子の安静・口型を登録してください。');};
+$('clear').onclick=()=>{capture=null;for(const k of Object.keys(profiles))delete profiles[k];reset();profileStatus();registrationMessage('登録を消しました。使用する子の安静・口型を登録してください。');};
 document.querySelectorAll('[data-capture]').forEach(b=>b.onclick=()=>{
- if(!active||!latest){say('message','カメラに顔を正面から映してから登録してください。');return;}
- if(capture){say('message','登録が終わるまで、そのまま待ってください。');return;}
+ if(!active||!latest){registrationMessage('カメラに顔を正面から映してから登録してください。');return;}
+ if(capture){registrationMessage('登録が終わるまで、そのまま待ってください。');return;}
  const key=b.dataset.capture;
- if(key!=='安静'&&!profiles['安静']){say('message','先に安静の形を登録してください。');return;}
- reset();capture={key,start:performance.now(),samples:[]};say('message',`${key}の形を先生が確認し、そのまま約2秒保ってください。`);
+ if(key!=='安静'&&!profiles['安静']){registrationMessage('先に安静の形を登録してください。');return;}
+ reset();const now=performance.now();capture={key,start:now+600,lastValid:now,samples:[]};registrationMessage(`${key}の形を先生が確認してください。準備のあと約2秒記録します。`);
 });
 function sample(f,now){
  if(!capture)return;
- if(!f){say('message','顔の位置が変わったため登録を中止しました。正面を向いて登録し直してください。');capture=null;return;}
+ if(!f){
+  if(now-capture.lastValid>500){capture=null;profileStatus();registrationMessage('顔を続けて確認できなかったため登録を中止しました。正面を向いて登録し直してください。');}
+  return;
+ }
+ capture.lastValid=now;
+ if(now<capture.start)return;
  capture.samples.push(f);
  if(now-capture.start<2000){say('calibrationStatus',`${capture.key} を登録中… ${Math.min(100,Math.round((now-capture.start)/20))}%`);return;}
  const {key,samples}=capture;capture=null;
- if(samples.length<18){say('message','十分な映像を取得できませんでした。もう一度登録してください。');profileStatus();return;}
- const p=summarize(samples);
- if(p.spread[0]>.025||p.spread[1]>.025){say('message','登録中に形が変わりました。形を保って、もう一度登録してください。');profileStatus();return;}
- const overlap=Object.entries(profiles).find(([k,other])=>k!==key&&(distance(p.center,other)<2.5||distance(other.center,p)<2.5));
- if(overlap){say('message',`${overlap[0]}の登録と区別しにくい形です。先生が形と撮影条件を確認して、もう一度登録してください。`);profileStatus();return;}
- // Replacing neutral invalidates earlier target registrations tied to that session baseline.
- if(key==='安静'){for(const k of Object.keys(profiles))delete profiles[k];}
- profiles[key]=p;profileStatus();say('message',`${key}を登録しました。${ready()?'練習できます。':'続けて目標の口型を登録してください。'}`);
+ const result=registerProfile(key,samples,profiles);profileStatus();
+ registrationMessage(result.error||result.warning||`${key}を登録しました。${ready()?'練習できます。':'続けて目標の口型を登録してください。'}`);
 }
 async function start(){
  if(active||starting)return;starting=true;$('start').disabled=true;say('message','認識モデルを読み込み中です。初回は少し時間がかかります。');
  try{
   if(!navigator.mediaDevices?.getUserMedia)throw Error('カメラを利用できません。localhost または HTTPS で開いてください。');
-  if(!model){const {FaceLandmarker,FilesetResolver}=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/vision_bundle.mjs');const vision=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm');model=await FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'},runningMode:'VIDEO',numFaces:2,minFaceDetectionConfidence:.6,minFacePresenceConfidence:.6,minTrackingConfidence:.6});}
+  if(!model){const {FaceLandmarker,FilesetResolver}=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/vision_bundle.mjs');const vision=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm');model=await FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'},runningMode:'VIDEO',numFaces:2,outputFaceBlendshapes:true,minFaceDetectionConfidence:.6,minFacePresenceConfidence:.6,minTrackingConfidence:.6});}
   stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});
   if(document.hidden){stream.getTracks().forEach(t=>t.stop());stream=null;throw Error('画面に戻ってから、カメラを開始してください。');}
   $('video').srcObject=stream;await $('video').play();active=true;latest=null;lastVideo=-1;lastInference=0;$('stop').disabled=false;$('placeholder').hidden=true;say('cameraStatus','カメラ 使用中');say('message','先生の設定で、安静と練習する口型を登録してください。');
@@ -63,10 +63,10 @@ function sound(now){
 function process(result,now){
  const video=$('video'),canvas=$('overlay');if(canvas.width!==video.videoWidth||canvas.height!==video.videoHeight){canvas.width=video.videoWidth;canvas.height=video.videoHeight;}const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);
  const faces=result.faceLandmarks;let f=null;
- if(faces.length===1){f=features(faces[0],canvas.width,canvas.height);if(f){const outline=[61,40,37,0,267,270,291,321,314,17,84,91,61];ctx.beginPath();outline.forEach((i,n)=>{const p=faces[0][i];ctx[n?'lineTo':'moveTo'](p.x*canvas.width,p.y*canvas.height);});ctx.strokeStyle='#f9d880';ctx.lineWidth=3;ctx.stroke();}}
+ if(faces.length===1){const pucker=result.faceBlendshapes?.[0]?.categories.find(c=>c.categoryName==='mouthPucker')?.score;f=Number.isFinite(pucker)?features(faces[0],canvas.width,canvas.height,pucker):null;if(f){const outline=[61,40,37,0,267,270,291,321,314,17,84,91,61];ctx.beginPath();outline.forEach((i,n)=>{const p=faces[0][i];ctx[n?'lineTo':'moveTo'](p.x*canvas.width,p.y*canvas.height);});ctx.strokeStyle='#f9d880';ctx.lineWidth=3;ctx.stroke();}}
  latest=f;const wasCapturing=!!capture;sample(f,now);sound(now);
  let detected=f?classify(f,profiles,Number($('tolerance').value)):'見えません';
- say('debug',f?`口幅 / 目の間隔：${f[0].toFixed(3)}\n開口 / 目の間隔：${f[1].toFixed(3)}\n登録との比較：${detected}\n音量 RMS：${level.toFixed(4)}`:'顔が1人、正面で映るようにしてください。');
+ say('debug',f?`口幅 / 目の間隔：${f[0].toFixed(3)}\n開口 / 目の間隔：${f[1].toFixed(3)}\nすぼめる指標：${f[2].toFixed(3)}\n登録との比較：${detected}\n音量 RMS：${level.toFixed(4)}`:'顔が1人、正面で映るようにしてください。');
  const shape=!!f&&ready()&&detected===target;
  const needsSound=$('mode').value==='sound';const hasSound=lastAudio>0&&now-lastAudio<200&&level>=Number($('threshold').value);
  const wasDone=timer.done;timer.update(now,shape&&(!needsSound||hasSound)&&!wasCapturing,Number($('seconds').value)*1000);
@@ -74,5 +74,5 @@ function process(result,now){
  let text=timer.done?'できた！ よく がんばったね':wasCapturing?'せんせいと かたちを とうろく中':!f?(faces.length>1?'ひとりで うつしてね':'かおを まっすぐ うつそう'):!ready()?'せんせいと かたちを とうろくしよう':!shape?'おてほんの かたちに してみよう':needsSound&&!audioStream?'せんせいに マイクを つけてもらおう':needsSound&&!hasSound?'その かたちで こえを だそう':'いいね！ そのまま そのまま';
  say('feedback',text);paintProgress();
 }
-function loop(now){if(!active)return;try{if($('video').readyState>=2&&$('video').currentTime!==lastVideo&&now-lastInference>=65){lastVideo=$('video').currentTime;lastInference=now;process(model.detectForVideo($('video'),now),now);}else if(now-lastInference>300){latest=null;capture=null;timer.reset();paintProgress();say('feedback','カメラの えいぞうを かくにんしよう');}}catch(e){stop();say('message','認識処理が停止しました。カメラを開始し直してください。');return;}raf=requestAnimationFrame(loop);}
+function loop(now){if(!active)return;try{if($('video').readyState>=2&&$('video').currentTime!==lastVideo&&now-lastInference>=65){lastVideo=$('video').currentTime;lastInference=now;process(model.detectForVideo($('video'),now),now);}else if(now-lastInference>300){latest=null;if(capture){capture=null;profileStatus();registrationMessage('映像が途切れたため登録を中止しました。カメラを確認して登録し直してください。');}timer.reset();paintProgress();say('feedback','カメラの えいぞうを かくにんしよう');}}catch(e){stop();say('message','認識処理が停止しました。カメラを開始し直してください。');return;}raf=requestAnimationFrame(loop);}
 $('start').onclick=start;$('stop').onclick=stop;document.addEventListener('visibilitychange',()=>{if(document.hidden&&active)stop();});window.addEventListener('pagehide',stop);profileStatus();
