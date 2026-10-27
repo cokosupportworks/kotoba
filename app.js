@@ -1,19 +1,23 @@
-import {features,registerProfile,classify,HoldTimer} from './engine.mjs?v=2';
+import {features,registerProfile,classify,HoldTimer} from './engine.mjs?v=3';
 const $=id=>document.getElementById(id);
 const profiles={};const timer=new HoldTimer();
 let target='あ',model=null,stream=null,audioStream=null,audioContext=null,analyser=null,audioData=null;
 let active=false,starting=false,raf=0,lastVideo=-1,lastInference=0,latest=null,capture=null,count=0,level=0,lastAudio=0;
-const hints={'あ':'おくちを たてに あけよう','い':'おくちを よこに ひこう','う':'おくちを すぼめよう'};
+const hints={'あ':'おくちを たてに あけよう','い':'おくちを よこに ひこう','う':'おくちを すぼめよう','お':'おくちを まるく あけよう','べー':'したを べーっと だしてみよう'};
+let teacherConfirmed=false;
+function teacherButton(){ $('teacherHold').setAttribute('aria-pressed',String(teacherConfirmed));say('teacherHold',teacherConfirmed?'先生：形が変わったので計測を止める':'先生：舌を確認して計測を始める');$('teacherHold').disabled=timer.done;}
+function modeUI(){const tongue=target==='べー';$('teacherControls').hidden=!tongue;$('tongue').style.display=tongue?'':'none';$('tongue').removeAttribute('hidden');$('mode').disabled=tongue;say('modeLabel',tongue?'舌を保つ・先生確認':$('mode').selectedOptions[0].textContent);}
+$('teacherHold').onclick=()=>{if(!active||!latest){say('feedback','かおを カメラに うつしてね');return;}if(timer.done)return;teacherConfirmed=!teacherConfirmed;teacherButton();};
 function say(id,text){if($(id).textContent!==text)$(id).textContent=text;}
-function reset(){timer.reset();document.body.classList.remove('success');paintProgress();}
+function reset(){teacherConfirmed=false;timer.reset();teacherButton();document.body.classList.remove('success');paintProgress();}
 function paintProgress(){const seconds=Number($('seconds').value);const percent=Math.min(100,timer.ms/(seconds*10));$('progress').style.width=percent+'%';$('progress').setAttribute('aria-valuenow',Math.round(percent));say('time',`${(timer.ms/1000).toFixed(1)} / ${seconds} 秒`);}
-function ready(){return ['安静',target].every(k=>profiles[k]);}
-function profileStatus(){say('calibrationStatus',['安静','あ','い','う'].map(k=>`${k}：${profiles[k]?'登録済み':'未登録'}`).join(' ／ '));}
+function ready(){return target==='べー'||['安静',target].every(k=>profiles[k]);}
+function profileStatus(){say('calibrationStatus',['安静','あ','い','う','お'].map(k=>`${k}：${profiles[k]?'登録済み':'未登録'}`).join(' ／ '));}
 function registrationMessage(text){say('registrationMessage',text);say('message',text);}
-function select(value){target=value;reset();document.querySelectorAll('[data-target]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.target===target)));say('targetText',target);say('instruction',hints[target]);$('face').setAttribute('aria-label',target+'の口型のイメージ');const [rx,ry]=target==='あ'?[26,34]:target==='い'?[49,12]:[16,19];$('mouth').setAttribute('rx',rx);$('mouth').setAttribute('ry',ry);say('feedback',active?'おてほんを みてみよう':'まずは カメラを はじめよう');}
+function select(value){target=value;reset();document.querySelectorAll('[data-target]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.target===target)));say('targetText',target);say('instruction',hints[target]);$('face').setAttribute('aria-label',target+'の口型のイメージ');const [rx,ry]={'あ':[26,34],'い':[49,12],'う':[16,19],'お':[24,28],'べー':[34,23]}[target];$('mouth').setAttribute('rx',rx);$('mouth').setAttribute('ry',ry);modeUI();say('feedback',active?'おてほんを みてみよう':'まずは カメラを はじめよう');}
 document.querySelectorAll('[data-target]').forEach(b=>b.onclick=()=>{if(!capture)select(b.dataset.target);});
 $('settingsButton').onclick=()=>{const open=$('settings').hidden;$('settings').hidden=!open;$('settingsButton').setAttribute('aria-expanded',String(open));};
-['mode','seconds','tolerance','threshold'].forEach(id=>$(id).onchange=()=>{reset();say('modeLabel',$('mode').selectedOptions[0].textContent);});
+['mode','seconds','tolerance','threshold'].forEach(id=>$(id).onchange=()=>{reset();modeUI();});
 $('retry').onclick=()=>{reset();say('feedback',active?'もういちど やってみよう':'カメラを はじめよう');};
 $('clear').onclick=()=>{capture=null;for(const k of Object.keys(profiles))delete profiles[k];reset();profileStatus();registrationMessage('登録を消しました。使用する子の安静・口型を登録してください。');};
 document.querySelectorAll('[data-capture]').forEach(b=>b.onclick=()=>{
@@ -67,12 +71,13 @@ function process(result,now){
  latest=f;const wasCapturing=!!capture;sample(f,now);sound(now);
  let detected=f?classify(f,profiles,Number($('tolerance').value)):'見えません';
  say('debug',f?`口幅 / 目の間隔：${f[0].toFixed(3)}\n開口 / 目の間隔：${f[1].toFixed(3)}\nすぼめる指標：${f[2].toFixed(3)}\n登録との比較：${detected}\n音量 RMS：${level.toFixed(4)}`:'顔が1人、正面で映るようにしてください。');
- const shape=!!f&&ready()&&detected===target;
- const needsSound=$('mode').value==='sound';const hasSound=lastAudio>0&&now-lastAudio<200&&level>=Number($('threshold').value);
+ if(!f&&teacherConfirmed){teacherConfirmed=false;teacherButton();}
+ const shape=!!f&&ready()&&(target==='べー'?teacherConfirmed:detected===target);
+ const needsSound=target!=='べー'&&$('mode').value==='sound';const hasSound=lastAudio>0&&now-lastAudio<200&&level>=Number($('threshold').value);
  const wasDone=timer.done;timer.update(now,shape&&(!needsSound||hasSound)&&!wasCapturing,Number($('seconds').value)*1000);
- if(!wasDone&&timer.done){count++;say('count',`できた！ ${count} 回`);document.body.classList.add('success');}
- let text=timer.done?'できた！ よく がんばったね':wasCapturing?'せんせいと かたちを とうろく中':!f?(faces.length>1?'ひとりで うつしてね':'かおを まっすぐ うつそう'):!ready()?'せんせいと かたちを とうろくしよう':!shape?'おてほんの かたちに してみよう':needsSound&&!audioStream?'せんせいに マイクを つけてもらおう':needsSound&&!hasSound?'その かたちで こえを だそう':'いいね！ そのまま そのまま';
+ if(!wasDone&&timer.done){teacherConfirmed=false;teacherButton();count++;say('count',`できた！ ${count} 回`);document.body.classList.add('success');}
+ let text=timer.done?(target==='べー'?'できた！ せんせいと キープできたね':'できた！ よく がんばったね'):wasCapturing?'せんせいと かたちを とうろく中':!f?(faces.length>1?'ひとりで うつしてね':'かおを まっすぐ うつそう'):!ready()?'せんせいと かたちを とうろくしよう':target==='べー'&&!teacherConfirmed?'せんせいに したを みてもらおう':!shape?'おてほんの かたちに してみよう':needsSound&&!audioStream?'せんせいに マイクを つけてもらおう':needsSound&&!hasSound?'その かたちで こえを だそう':'いいね！ そのまま そのまま';
  say('feedback',text);paintProgress();
 }
-function loop(now){if(!active)return;try{if($('video').readyState>=2&&$('video').currentTime!==lastVideo&&now-lastInference>=65){lastVideo=$('video').currentTime;lastInference=now;process(model.detectForVideo($('video'),now),now);}else if(now-lastInference>300){latest=null;if(capture){capture=null;profileStatus();registrationMessage('映像が途切れたため登録を中止しました。カメラを確認して登録し直してください。');}timer.reset();paintProgress();say('feedback','カメラの えいぞうを かくにんしよう');}}catch(e){stop();say('message','認識処理が停止しました。カメラを開始し直してください。');return;}raf=requestAnimationFrame(loop);}
-$('start').onclick=start;$('stop').onclick=stop;document.addEventListener('visibilitychange',()=>{if(document.hidden&&active)stop();});window.addEventListener('pagehide',stop);profileStatus();
+function loop(now){if(!active)return;try{if($('video').readyState>=2&&$('video').currentTime!==lastVideo&&now-lastInference>=65){lastVideo=$('video').currentTime;lastInference=now;process(model.detectForVideo($('video'),now),now);}else if(now-lastInference>300){latest=null;if(capture){capture=null;profileStatus();registrationMessage('映像が途切れたため登録を中止しました。カメラを確認して登録し直してください。');}reset();paintProgress();say('feedback','カメラの えいぞうを かくにんしよう');}}catch(e){stop();say('message','認識処理が停止しました。カメラを開始し直してください。');return;}raf=requestAnimationFrame(loop);}
+$('start').onclick=start;$('stop').onclick=stop;document.addEventListener('visibilitychange',()=>{if(document.hidden&&active)stop();});window.addEventListener('pagehide',stop);profileStatus();modeUI();
